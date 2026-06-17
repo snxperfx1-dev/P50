@@ -1,5 +1,5 @@
 //@version=6
-indicator("SYMPHONY Wave Intelligence Elite Max – v72 ERF", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+indicator("SYMPHONY Wave Intelligence Elite Max – v72 ERF", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500, max_polylines_count=100)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SECTION 1 — INPUT GROUPS
@@ -4448,7 +4448,6 @@ color trace_L3_col = color.new(#c084fc, 0)    // L3 Grandchild (M1)
 
 // ── Persistent drawing objects ───────────────────────────────────────────────
 var box   l2ZoneBox     = na  // L2 HTF zone (outermost — tf2 price range)
-var box   l0ZoneBox     = na  // L0 Primary zone (origin → now)
 var box   l1ZoneBox     = na  // L1 Child zone (tf1 price range)
 var box   l3ZoneBox     = na  // L3 Grandchild zone (M1 price range)
 
@@ -4458,6 +4457,16 @@ var label l1ZoneLbl     = na  // L1 label at zone bottom-left
 var label l3ZoneLbl     = na  // L3 label at zone top-right
 var label l0OriginPin   = na  // L0 origin anchor pin
 var label dominantLabel = na  // Dominant wave tag on dominant structure
+
+// Primary Wave Curve — replaces the heavy L0 box. A lightweight curved polyline
+// that traces the actual L0 wave path (origin -> now), colored by dominant
+// direction (green = bullish, red = bearish). The path is recorded one point per
+// bar and the curve is (re)drawn on the last bar so it stays in sync as the wave
+// evolves, without the visual weight of a filled rectangle.
+var polyline           l0WaveCurve     = na
+var array<chart.point> l0PathPts       = array.new<chart.point>()
+var int                _l0PathOriginBar = na
+var int                _l0LastAddBar    = na
 
 // ── Helper: midpoint of a price range ───────────────────────────────────────
 f_mid(float h, float l) => (h + l) / 2.0
@@ -4532,14 +4541,34 @@ if showL0Zone and not na(point4OriginBar) and not na(point4OriginHigh) and not n
     // _l0phase = waveProgressCanonical (used for label text below)
     string _l0txt = "L0 PRIMARY · " + l0_targetWave + " · " + l0_currentPhase + " · D" + str.tostring(math.round(nz(l0_dominance, 0.0))) + "%"
 
-    // Zone box: origin → now (the actual L0 wave span)
-    if na(l0ZoneBox)
-        l0ZoneBox := box.new(point4OriginBar, point4OriginHigh, bar_index, point4OriginLow,
-             border_color=trace_L0_col, border_width=2,
-             bgcolor=color.new(trace_L0_col, 94))
-    else
-        box.set_lefttop    (l0ZoneBox, point4OriginBar, point4OriginHigh)
-        box.set_rightbottom(l0ZoneBox, bar_index,       point4OriginLow)
+    // ── Primary Wave Curve (replaces the heavy L0 box) ──────────────────────
+    // Trace the ACTUAL L0 wave path from its origin to the current bar as a
+    // smooth, lightweight curve. Direction is dominant-source (displayWaveDir,
+    // falling back to the lifecycle direction): green = bullish, red = bearish.
+    int _l0dir = displayWaveDir != 0 ? displayWaveDir : direction
+    // Reset the recorded path whenever a new primary wave spawns (origin moves),
+    // seeding the first point at the true origin pivot.
+    if na(_l0PathOriginBar) or _l0PathOriginBar != point4OriginBar
+        array.clear(l0PathPts)
+        _l0PathOriginBar := point4OriginBar
+        float _l0seed = _l0dir == 1 ? point4OriginLow : _l0dir == -1 ? point4OriginHigh : close
+        array.push(l0PathPts, chart.point.from_index(point4OriginBar, _l0seed))
+        _l0LastAddBar := point4OriginBar
+    // One path point per confirmed bar; refresh the last point intrabar so the
+    // curve tracks the live bar as the wave evolves.
+    if na(_l0LastAddBar) or bar_index != _l0LastAddBar
+        array.push(l0PathPts, chart.point.from_index(bar_index, close))
+        _l0LastAddBar := bar_index
+    else if array.size(l0PathPts) > 0
+        array.set(l0PathPts, array.size(l0PathPts) - 1, chart.point.from_index(bar_index, close))
+    // Draw/refresh the curve only on the last bar — keeps it unobtrusive.
+    if barstate.islast
+        if not na(l0WaveCurve)
+            polyline.delete(l0WaveCurve)
+            l0WaveCurve := na
+        if array.size(l0PathPts) >= 2
+            color _l0curveCol = _l0dir == 1 ? color.green : _l0dir == -1 ? color.red : color.gray
+            l0WaveCurve := polyline.new(l0PathPts, curved = true, closed = false, line_color = _l0curveCol, line_width = 2, xloc = xloc.bar_index)
 
     // Label at the origin bar (top edge) — exactly where the wave was born
     if na(l0ZoneLbl)
