@@ -27,6 +27,11 @@ var string GRP_DASH_P3 = "Dashboard P3 — Recursive Wave Intel"
 var string GRP_DASH_FU = "Dashboard FU — FU Order Blocks"
 var string GRP_CYCLEVIS = "Entry Cycle Visibility (Section 9)"
 
+// Punchy, high-visibility Entry-Cycle marker colors (bright enough to "hit you
+// in the face" against candles). Shared by chart markers and the registry.
+color EC_GREEN = #00E676
+color EC_RED   = #FF1744
+
 // Panel A toggles
 showDA_Header       = input.bool(true, "Show Panel A Header",            group=GRP_DASH_A)
 showDA_Directive    = input.bool(true, "Show Trade Directive",           group=GRP_DASH_A)
@@ -2147,9 +2152,9 @@ if _allowSpawn
     // for a new wave regardless of Display Mode.
     if showLabels
         label.new(bar_index, _newDir == 1 ? low - atr * 0.4 : high + atr * 0.4,
-             _newDir == 1 ? "EC▲" : "EC▼",
+             _newDir == 1 ? "EC↑" : "EC↓",
              style=_newDir == 1 ? label.style_label_up : label.style_label_down,
-             textcolor=_newDir == 1 ? color.lime : color.red, color=color.new(color.black, 100), size=size.tiny)
+             textcolor=_newDir == 1 ? EC_GREEN : EC_RED, color=color.new(color.black, 100), size=size.small)
 
     if not na(p4Box)
         box.delete(p4Box)
@@ -3293,14 +3298,14 @@ if die_entryCycleFired and showLabels
          die_entryScore_safe >= 60 ? "small"  : "tiny"
 
     // Compact marker: EC + direction + score (registry carries full detail)
-    string _eTxt = enableClustering and die_clusterCount > 1 ? "EC×" + str.tostring(die_clusterCount) : (_isLong2 ? "EC▲" : "EC▼") + str.tostring(math.round(die_entryScore_safe))
+    string _eTxt = enableClustering and die_clusterCount > 1 ? "EC×" + str.tostring(die_clusterCount) : (_isLong2 ? "EC↑" : "EC↓") + str.tostring(math.round(die_entryScore_safe))
 
     label.new(bar_index,
-         _isLong2 ? low - atr * 0.4 : high + atr * 0.4,
+         _isLong2 ? low - atr * 0.5 : high + atr * 0.5,
          _eTxt,
          style=_isLong2 ? label.style_label_up : label.style_label_down,
-         color=color.new(color.black, 100), textcolor=_isLong2 ? color.lime : color.red,
-         size=_eSizeStr == "large" ? size.normal : size.tiny)
+         color=color.new(color.black, 100), textcolor=_isLong2 ? EC_GREEN : EC_RED,
+         size=_eSizeStr == "large" ? size.large : size.small)
     die_labelCount := die_labelCount + 1
 
 // ─ ENTRY + FU Confluence Label (Priority 100 — highest visibility)
@@ -3456,14 +3461,14 @@ f_energyRegistry() =>
                         _nearP := _p
                         _nearD := _d
                     table.cell(edTbl, 0, _row, str.tostring(math.round_to_mintick(_p)), text_color=color.white, text_size=_ez)
-                    table.cell(edTbl, 1, _row, _d == 1 ? "▲" : "▼", text_color=_d == 1 ? color.lime : color.red, text_size=_ez)
+                    table.cell(edTbl, 1, _row, _d == 1 ? "▲" : "▼", text_color=_d == 1 ? EC_GREEN : EC_RED, text_size=_ez)
                     table.cell(edTbl, 2, _row, "EC" + str.tostring(array.get(ed_id, _i)), text_color=color.silver, text_size=_ez)
                     table.cell(edTbl, 3, _row, str.tostring(bar_index - _b) + "b", text_color=color.silver, text_size=_ez)
                     table.cell(edTbl, 4, _row, str.tostring(math.round_to_mintick(_dist)), text_color=color.silver, text_size=_ez)
                     table.cell(edTbl, 5, _row, "Unresolved", text_color=color.orange, text_size=_ez)
                     _row := _row + 1
         table.cell(edTbl, 0, 11, "Nearest unresolved", text_color=#00ffcc, text_size=_ez)
-        table.cell(edTbl, 1, 11, _nearD == 1 ? "▲" : _nearD == -1 ? "▼" : "–", text_color=_nearD == 1 ? color.lime : _nearD == -1 ? color.red : color.gray, text_size=_ez)
+        table.cell(edTbl, 1, 11, _nearD == 1 ? "▲" : _nearD == -1 ? "▼" : "–", text_color=_nearD == 1 ? EC_GREEN : _nearD == -1 ? EC_RED : color.gray, text_size=_ez)
         table.cell(edTbl, 2, 11, na(_nearP) ? "–" : str.tostring(math.round_to_mintick(_nearP)), text_color=color.white, text_size=_ez)
         table.cell(edTbl, 4, 11, na(_nearP) ? "–" : str.tostring(math.round_to_mintick(math.abs(close - _nearP))), text_color=color.white, text_size=_ez)
     0
@@ -5515,6 +5520,19 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
     string oe_txtSwing = oe_dead ? "–" : (displayWaveDir == 1 ? "▲ " : "▼ ") + f_v72_pct(oe_pSwing) + " · " + str.tostring(math.round(oe_mSwing)) + "p · " + oe_dSwing
     string oe_recText  = oe_dead ? "Stand Down — no opportunity" : oe_recTier + " " + oe_recDirWord + " · " + f_v72_pct(oe_recProb)
 
+    // New-entry flash: latch the bar where the opportunity first becomes
+    // TRADE ACTIVE, then flash a red alert row for a few bars. On realtime the
+    // alert blinks (timenow-driven) so a freshly-sent entry is impossible to miss.
+    var string _oe_prevState = ""
+    bool _oe_entryJustSent = oppState == "TRADE ACTIVE" and _oe_prevState != "TRADE ACTIVE"
+    var int _oe_lastEntryBar = na
+    if _oe_entryJustSent
+        _oe_lastEntryBar := bar_index
+    _oe_prevState := oppState
+    bool   oe_entryFresh = not na(_oe_lastEntryBar) and (bar_index - _oe_lastEntryBar) <= 6
+    bool   oe_flashOn    = oe_entryFresh and (not barstate.isrealtime or (math.floor(timenow / 450) % 2 == 0))
+    string oe_signalTxt  = oe_entryFresh ? ("⚠ NEW ENTRY  " + oe_recDirWord + " @ " + f_v72_px(doe_entryMid)) : "— no new entry —"
+
     // ── V72.9 Wave Registry (C5, C12) — var locals persist (single call site) ─
     var array<int>    wr_waveId          = array.new_int()
     var array<int>    wr_parentWaveId    = array.new_int()
@@ -5633,7 +5651,7 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
 
     // ── V72.12 Dashboards ────────────────────────────────────────────────────
     if barstate.islast and showTable and showV72Command
-        var table cmd = table.new(position.middle_right, 2, 28, bgcolor=color.new(#05050f, 0), border_color=color.new(#00ffcc, 40), border_width=1, frame_color=color.new(#00ffcc, 10), frame_width=1)
+        var table cmd = table.new(position.middle_right, 2, 31, bgcolor=color.new(#05050f, 0), border_color=color.new(#00ffcc, 40), border_width=1, frame_color=color.new(#00ffcc, 10), frame_width=1)
         table.cell(cmd, 0, 0, "V72 COMMAND", text_color=color.white, bgcolor=color.new(#0a0a30, 0), text_size=_szCmd)
         table.cell(cmd, 1, 0, oppState, text_color=color.black, bgcolor=(oppState == "TRADE ACTIVE" ? #00ff88 : oppState == "PREPARE TO EXECUTE" ? color.lime : oppState == "OPPORTUNITY CONFIRMING" ? color.yellow : oppState == "OPPORTUNITY FORMING" ? color.orange : color.gray), text_size=_szCmd)
         table.cell(cmd, 0, 1, "Bias", text_color=#00ffcc, text_size=_szCmd)
@@ -5689,8 +5707,14 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
         table.cell(cmd, 1, 25, oe_txtSwing, text_color=(oe_pSwing >= 70 ? color.lime : oe_pSwing >= 50 ? color.yellow : color.silver), text_size=_szCmd)
         table.cell(cmd, 0, 26, "▶ Recommend", text_color=#00ffcc, text_size=_szCmd)
         table.cell(cmd, 1, 26, oe_recText, text_color=color.black, bgcolor=(oe_dead ? color.gray : displayWaveDir == 1 ? #00ff88 : color.red), text_size=_szCmd)
-        table.cell(cmd, 0, 27, "Plan (E/S/T)", text_color=#00ffcc, text_size=_szCmd)
-        table.cell(cmd, 1, 27, oe_dead ? "–" : (f_v72_px(doe_entryMid) + " / " + f_v72_px(inv_activeStop) + " / " + f_v72_px(te_tp1) + "  · " + str.tostring(math.round(oe_recMove)) + "p · " + oe_recDur), text_color=color.white, text_size=_szCmd)
+        table.cell(cmd, 0, 27, "Entry", text_color=#00ffcc, text_size=_szCmd)
+        table.cell(cmd, 1, 27, oe_dead ? "–" : f_v72_px(doe_entryMid), text_color=color.aqua, text_size=_szCmd)
+        table.cell(cmd, 0, 28, "Stop", text_color=#00ffcc, text_size=_szCmd)
+        table.cell(cmd, 1, 28, oe_dead ? "–" : (f_v72_px(inv_activeStop) + (inv_invalidated ? "  ✗" : "")), text_color=EC_RED, text_size=_szCmd)
+        table.cell(cmd, 0, 29, "Target", text_color=#00ffcc, text_size=_szCmd)
+        table.cell(cmd, 1, 29, oe_dead ? "–" : (f_v72_px(te_tp1) + "  · " + str.tostring(math.round(oe_recMove)) + "p · " + oe_recDur), text_color=EC_GREEN, text_size=_szCmd)
+        table.cell(cmd, 0, 30, "Signal", text_color=#00ffcc, text_size=_szCmd)
+        table.cell(cmd, 1, 30, oe_signalTxt, text_color=(oe_entryFresh ? color.white : color.gray), bgcolor=(oe_entryFresh ? (oe_flashOn ? EC_RED : color.new(EC_RED, 65)) : color.new(#05050f, 0)), text_size=_szCmd)
     0
 
 // ── Run the V72 engine once per bar ──────────────────────────────────────────
