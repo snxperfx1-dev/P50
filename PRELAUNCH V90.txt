@@ -169,6 +169,7 @@ tf2                = input.timeframe("60",  "Timeframe 2 (HTF Bias)",        gro
 // direction), L2=dominant (M60). L1/L2 already use the fixed TF1/TF2 above.
 bool   useFixedHierarchy = input.bool(true, "Fixed Wave Hierarchy (anchor layers to absolute TFs)", group=GRP_MTF, tooltip="When ON, direction is computed on the fixed L1 trading wave (TF1, 15m) via request.security, so changing the chart timeframe no longer flips the model. L3 execution = M3, L2 dominant = TF2 (60m).")
 string tfL3        = input.timeframe("3",   "L3 Execution TF (fixed)",       group=GRP_MTF)
+string tfL0        = input.timeframe("5",   "L0 Structure TF (fixed)",       group=GRP_MTF)
 
 // ─── Execution ──────────────────────────────────────────────────────────────
 baseLockBars       = input.int   (10,   "Base Lock Bars After Entry Fire",   group=GRP_EXEC, minval=1, maxval=50)
@@ -356,6 +357,9 @@ f_zoneRange() => [ta.highest(high, 20), ta.lowest(low, 20)]
      f_zoneRange(), lookahead=barmerge.lookahead_off)
 
 [l3_zoneHigh, l3_zoneLow] = request.security(syminfo.tickerid, tfL3,
+     f_zoneRange(), lookahead=barmerge.lookahead_off)
+
+[l0_zoneHigh, l0_zoneLow] = request.security(syminfo.tickerid, tfL0,
      f_zoneRange(), lookahead=barmerge.lookahead_off)
 
 var int htfBias1  = 0
@@ -4479,7 +4483,7 @@ alertcondition(p3_highConvictionSetup,
 
 var string GRP_TRACE = "Wave Traceability (Phase 1)"
 showTraceZones  = input.bool(true,  "Show Wave Traceability Zones (on-chart)", group=GRP_TRACE)
-showL0Zone      = input.bool(false, "Show L0 Primary Origin Zone (deprecated)", group=GRP_TRACE)
+showL0Zone      = input.bool(true,  "Show L0 (M5) Structure Zone",            group=GRP_TRACE)
 showDominantTag = input.bool(true,  "Show Dominant Wave Tag",                  group=GRP_TRACE)
 showOriginPins  = input.bool(true,  "Show Origin Anchor Pins",                 group=GRP_TRACE)
 
@@ -4494,26 +4498,16 @@ color trace_L1_col = color.aqua               // L1 Child
 color trace_L3_col = color.new(#c084fc, 0)    // L3 Grandchild (M1)
 
 // ── Persistent drawing objects ───────────────────────────────────────────────
-var box   l2ZoneBox     = na  // L2 HTF zone (outermost — tf2 price range)
-var box   l1ZoneBox     = na  // L1 Child zone (tf1 price range)
-var box   l3ZoneBox     = na  // L3 Grandchild zone (M1 price range)
+var box   l2ZoneBox     = na  // L2 zone (60m price range)
+var box   l0ZoneBox     = na  // L0 zone (M5 price range)
+var box   l1ZoneBox     = na  // L1 zone (15m price range)
+var box   l3ZoneBox     = na  // L3 zone (M3 price range)
 
-var label l2ZoneLbl     = na  // L2 label at zone top-left
-var label l0ZoneLbl     = na  // L0 label at origin bar
-var label l1ZoneLbl     = na  // L1 label at zone bottom-left
-var label l3ZoneLbl     = na  // L3 label at zone top-right
-var label l0OriginPin   = na  // L0 origin anchor pin
+var label l2ZoneLbl     = na  // L2 label
+var label l0ZoneLbl     = na  // L0 label
+var label l1ZoneLbl     = na  // L1 label
+var label l3ZoneLbl     = na  // L3 label
 var label dominantLabel = na  // Dominant wave tag on dominant structure
-
-// Primary Wave Curve — replaces the heavy L0 box. A lightweight curved polyline
-// that traces the actual L0 wave path (origin -> now), colored by dominant
-// direction (green = bullish, red = bearish). The path is recorded one point per
-// bar and the curve is (re)drawn on the last bar so it stays in sync as the wave
-// evolves, without the visual weight of a filled rectangle.
-var polyline           l0WaveCurve   = na
-var array<chart.point> l0PathPts     = array.new<chart.point>()   // build buffer for the drawn curve
-var array<chart.point> l0AllPts      = array.new<chart.point>()   // rolling per-bar path record (for origin reconstruction)
-var int                _l0LastAddBar = na
 
 // ── Helper: midpoint of a price range ───────────────────────────────────────
 f_mid(float h, float l) => (h + l) / 2.0
@@ -4543,6 +4537,8 @@ int _l1R_far  = bar_index + 12   // L1 Child — middle
 int _l1R_near = bar_index + 3
 int _l3R_far  = bar_index + 7    // L3 Grandchild — narrowest
 int _l3R_near = bar_index + 3
+int _l0R_far  = bar_index + 9    // L0 (M5) — between L3 and L1
+int _l0R_near = bar_index + 3
 
 // ════════════════════════════════════════════════════════════════════════════
 // PHASE 1-A  L2 HTF TRACEABILITY
@@ -4584,91 +4580,29 @@ if showTraceZones and barstate.islast and not na(l2_zoneHigh) and not na(l2_zone
 // Label: placed at the origin bar (the actual spawn point)
 // ════════════════════════════════════════════════════════════════════════════
 
-// Continuous L0 path recorder — captures one point per bar UNCONDITIONALLY so the
-// Primary Wave Curve can always be reconstructed from the true L0 origin (no
-// matter when the wave was detected). Rolling cap keeps memory bounded. The
-// last point is refreshed intrabar so the curve tracks the live bar.
-if na(_l0LastAddBar) or bar_index != _l0LastAddBar
-    array.push(l0AllPts, chart.point.from_index(bar_index, close))
-    _l0LastAddBar := bar_index
-    if array.size(l0AllPts) > 2000
-        array.shift(l0AllPts)
-else if array.size(l0AllPts) > 0
-    array.set(l0AllPts, array.size(l0AllPts) - 1, chart.point.from_index(bar_index, close))
+// ── PHASE 1-B  L0 (M5) — fixed-timeframe structure band ─────────────────────
+// L0 is now the 5-minute structure, read via request.security(tfL0). It is drawn
+// as a narrow price band (l0_zoneHigh/l0_zoneLow) exactly like L1/L2/L3, so it is
+// viewport-independent and never changes with the chart timeframe. (The former
+// chart-based point4Origin Primary Wave Curve has been removed.)
+if showL0Zone and barstate.islast and not na(l0_zoneHigh) and not na(l0_zoneLow)
 
-if showL0Zone and not na(point4OriginBar) and not na(point4OriginHigh) and not na(point4OriginLow)
+    string _l0txt = "L0 " + tfL0 + "m"
 
-    // _l0phase = waveProgressCanonical (used for label text below)
-    string _l0txt = "L0 PRIMARY · " + l0_targetWave + " · " + l0_currentPhase + " · D" + str.tostring(math.round(nz(l0_dominance, 0.0))) + "%"
-
-    // ── Primary Wave Curve (replaces the heavy L0 box) ──────────────────────
-    // ALWAYS anchored at the true L0 origin (point4OriginBar) and traces the real
-    // wave path from there to the current bar via the continuous recorder above.
-    // Direction is dominant-source (displayWaveDir, falling back to lifecycle
-    // direction): green = bullish, red = bearish. Drawn on the last bar so it
-    // persists across the chart and stays visible as the wave evolves.
-    int _l0dir = displayWaveDir != 0 ? displayWaveDir : direction
-    if barstate.islast
-        if not na(l0WaveCurve)
-            polyline.delete(l0WaveCurve)
-            l0WaveCurve := na
-        array.clear(l0PathPts)
-        // Seed at the exact L0 origin pivot so the curve always starts there.
-        float _l0seed = _l0dir == 1 ? point4OriginLow : _l0dir == -1 ? point4OriginHigh : close
-        array.push(l0PathPts, chart.point.from_index(point4OriginBar, _l0seed))
-        // Append every recorded point AFTER the origin → the real traced path.
-        if array.size(l0AllPts) > 0
-            for _i = 0 to array.size(l0AllPts) - 1
-                chart.point _pp = array.get(l0AllPts, _i)
-                if _pp.index > point4OriginBar
-                    array.push(l0PathPts, _pp)
-        if array.size(l0PathPts) >= 2
-            color _l0curveCol = _l0dir == 1 ? color.green : _l0dir == -1 ? color.red : color.gray
-            l0WaveCurve := polyline.new(l0PathPts, curved = true, closed = false, line_color = _l0curveCol, line_width = 2, xloc = xloc.bar_index)
-
-    // Label at the origin bar (top edge) — exactly where the wave was born
-    if na(l0ZoneLbl)
-        l0ZoneLbl := label.new(point4OriginBar, point4OriginHigh, _l0txt,
+    if na(l0ZoneBox)
+        l0ZoneBox := box.new(_l0R_near, l0_zoneHigh, _l0R_far, l0_zoneLow,
+             border_color=trace_L0_col, border_width=2,
+             bgcolor=color.new(trace_L0_col, 92),
+             border_style=line.style_solid)
+        l0ZoneLbl := label.new(_l0R_near, l0_zoneHigh, _l0txt,
              style=label.style_label_right,
              color=color.new(#10103a, 10),
              textcolor=trace_L0_col, size=size.small, textalign=text.align_left)
     else
-        label.set_xy  (l0ZoneLbl, point4OriginBar, point4OriginHigh)
+        box.set_lefttop    (l0ZoneBox, _l0R_near, l0_zoneHigh)
+        box.set_rightbottom(l0ZoneBox, _l0R_far,  l0_zoneLow)
+        label.set_xy  (l0ZoneLbl, _l0R_near, l0_zoneHigh)
         label.set_text(l0ZoneLbl, _l0txt)
-
-    // Origin anchor pin — small triangle at the exact spawn pivot
-    if showOriginPins and ecvShow_Origin
-        if na(l0OriginPin)
-            l0OriginPin := label.new(point4OriginBar,
-                 direction == 1 ? point4OriginLow : point4OriginHigh,
-                 "L0",
-                 style=direction == 1 ? label.style_label_up : label.style_label_down,
-                 color=color.new(trace_L0_col, 15),
-                 textcolor=color.black, size=size.tiny)
-        else
-            label.set_xy(l0OriginPin, point4OriginBar,
-                 direction == 1 ? point4OriginLow : point4OriginHigh)
-
-    // Section 9 — "Wave Completion" marker. Fires when ENGINE 1A canonical phase
-    // reaches the Demand Return or Supply Return state — the final lifecycle phase.
-    // IE1A is the sole authority; score-based thresholds are not used here.
-    var label l0CompletionLbl = na
-    bool _waveComplete = ie1a_currentPhase == "Demand Return" or ie1a_currentPhase == "Supply Return"
-    if showOriginPins and ecvShow_WaveCompletion and _waveComplete
-        string _compTxt = "WAVE COMPLETION\n" + waveProgressDirLabel
-        if na(l0CompletionLbl)
-            l0CompletionLbl := label.new(bar_index,
-                 direction == 1 ? high + atr * 0.6 : low - atr * 0.6,
-                 _compTxt,
-                 style=direction == 1 ? label.style_label_down : label.style_label_up,
-                 color=color.new(trace_L0_col, 20),
-                 textcolor=color.black, size=size.small)
-        else
-            label.set_xy  (l0CompletionLbl, bar_index, direction == 1 ? high + atr * 0.6 : low - atr * 0.6)
-            label.set_text(l0CompletionLbl, _compTxt)
-    else if not na(l0CompletionLbl)
-        label.delete(l0CompletionLbl)
-        l0CompletionLbl := na
 
 
 // ════════════════════════════════════════════════════════════════════════════
