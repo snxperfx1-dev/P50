@@ -5147,9 +5147,20 @@ float  in_tqeGradeC = input.float(42.0, "TQE: C Threshold",  group=GRP_V72_TQE, 
 int    in_doeCapBase = input.int(88, "DOE: Confidence Cap (base)",        group=GRP_V72_DOE, minval=50, maxval=100)
 int    in_doeCapConv = input.int(95, "DOE: Confidence Cap (convergence)", group=GRP_V72_DOE, minval=50, maxval=100)
 
+// ── V72 Phase 3 — Trader Intent (L3) + Opportunity Engine (L2/L4) ────────────
+// Direction stays single-source (displayWaveDir). These inputs only choose which
+// horizon the trader is playing and how Expected Move is scaled per horizon.
+var string GRP_V72_INTENT = "V72 — Trader Intent (Phase 3)"
+string in_sessionMode = input.string("Adaptive", "Session Mode (Trader Intent)", options=["Scalper", "Intraday", "Swing", "Adaptive"], group=GRP_V72_INTENT, tooltip="L3 Trader Intent: filters the Opportunity Engine to the style you are trading today. Adaptive auto-selects the highest-probability horizon.")
+float  in_pipSize    = input.float(0.0, "Pip Size (0 = auto)",           group=GRP_V72_INTENT, minval=0.0, step=0.00001, tooltip="Price value of 1 pip used for Expected Move. 0 = auto (mintick × 10).")
+float  in_emScalpATR = input.float(1.0, "Expected Move: Scalp (ATR)",    group=GRP_V72_INTENT, minval=0.1, step=0.1)
+float  in_emIntraATR = input.float(3.0, "Expected Move: Intraday (ATR)", group=GRP_V72_INTENT, minval=0.1, step=0.1)
+float  in_emSwingATR = input.float(9.0, "Expected Move: Swing (ATR)",    group=GRP_V72_INTENT, minval=0.1, step=0.1)
+int    in_sessionModeCode = in_sessionMode == "Scalper" ? 0 : in_sessionMode == "Intraday" ? 1 : in_sessionMode == "Swing" ? 2 : 3
+
 // Bundle tunables into arrays (each array counts as a single external element).
-array<float> v72F = array.from(in_frzProximityATR, in_frzConvergenceATR, in_rieW_decay, in_rieW_absorb, in_rieW_convex, in_rieW_stabExp, in_rieW_press, in_rieW_stabInv, in_invOriginBuffer, in_invZoneBuffer, in_teTertiaryATR, in_rrMinimum, in_tqeW_ie1a, in_tqeW_erf, in_tqeW_frz, in_tqeW_mce, in_tqeW_re, in_tqeW_liq, in_tqeGradeA1, in_tqeGradeA, in_tqeGradeB, in_tqeGradeC)
-array<int>   v72I = array.from(in_doeCapBase, in_doeCapConv)
+array<float> v72F = array.from(in_frzProximityATR, in_frzConvergenceATR, in_rieW_decay, in_rieW_absorb, in_rieW_convex, in_rieW_stabExp, in_rieW_press, in_rieW_stabInv, in_invOriginBuffer, in_invZoneBuffer, in_teTertiaryATR, in_rrMinimum, in_tqeW_ie1a, in_tqeW_erf, in_tqeW_frz, in_tqeW_mce, in_tqeW_re, in_tqeW_liq, in_tqeGradeA1, in_tqeGradeA, in_tqeGradeB, in_tqeGradeC, in_pipSize, in_emScalpATR, in_emIntraATR, in_emSwingATR)
+array<int>   v72I = array.from(in_doeCapBase, in_doeCapConv, in_sessionModeCode)
 array<bool>  v72B = array.from(in_teTertiaryOn, in_dashAdvancedMode, in_showV72Command)
 string       v72Sz = dashTextSize == "tiny" ? size.tiny : dashTextSize == "normal" ? size.normal : size.small
 
@@ -5213,6 +5224,12 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
     float tqeGradeC         = array.get(_cf, 21)
     int   doeCapBase        = array.get(_ci, 0)
     int   doeCapConv        = array.get(_ci, 1)
+    // Phase 3 (Trader Intent + Opportunity Engine) — defensive reads w/ defaults
+    float pipSizeIn   = array.size(_cf) > 22 ? array.get(_cf, 22) : 0.0
+    float emScalpATR  = array.size(_cf) > 23 ? array.get(_cf, 23) : 1.0
+    float emIntraATR  = array.size(_cf) > 24 ? array.get(_cf, 24) : 3.0
+    float emSwingATR  = array.size(_cf) > 25 ? array.get(_cf, 25) : 9.0
+    int   sessionMode = array.size(_ci) > 2  ? array.get(_ci, 2)  : 3
     bool  teTertiaryOn      = array.get(_cb, 0)
     bool  dashAdvancedMode  = array.get(_cb, 1)
     bool  showV72Command    = array.get(_cb, 2)
@@ -5424,6 +5441,42 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
          (ie1a_currentPhase == "Expansion" or ie1a_currentPhase == "New High" or ie1a_currentPhase == "New Low") ? _cmdDirWord + " continuation" :
          _cmdDirWord + " developing"
 
+    // ── V72.8c OPPORTUNITY ENGINE + TRADER INTENT (Phase 3) ──────────────────
+    // L2 Opportunity Engine: enumerate the opportunities that EXIST right now by
+    // horizon (Scalp/Intraday/Swing). Direction is displayWaveDir (single source),
+    // so all tiers share one direction; they differ in probability/horizon/move.
+    // L3 Trader Intent: Session Mode filters to the chosen style (Adaptive picks
+    // the highest-probability horizon). L4: a consolidated execution plan.
+    // Hard veto (no direction / invalidated) zeroes every tier — consistent w/ P1.
+    float pipSize  = pipSizeIn > 0 ? pipSizeIn : syminfo.mintick * 10.0
+    bool  oe_dead  = displayWaveDir == 0 or inv_invalidated
+    // Per-tier probability: same maturity (oppProgress) re-weighted by the
+    // alignment that matters for each horizon (exec-frame for scalp, balanced for
+    // intraday, HTF for swing). Clamped 0–100.
+    float oe_pScalp = oe_dead ? 0.0 : math.min(100.0, oppProgress * 0.40 + mce_execAlignmentScore * 0.30 + erf_tradeReadiness * 0.15 + (frz_inProximity and frz_bestZoneDir == displayWaveDir ? 15.0 : 0.0))
+    float oe_pIntra = oe_dead ? 0.0 : math.min(100.0, oppProgress * 0.45 + mce_alignmentScore * 0.25 + tqe_rawScore * 0.20 + rot_controlStability * 0.10)
+    float oe_pSwing = oe_dead ? 0.0 : math.min(100.0, oppProgress * 0.35 + mce_htfAlignmentScore * 0.35 + rot_controlStability * 0.15 + ne_narrativeStrength * 0.15)
+    // Expected move per horizon (pips), ATR-scaled and tunable.
+    float oe_mScalp = atr * emScalpATR / pipSize
+    float oe_mIntra = atr * emIntraATR / pipSize
+    float oe_mSwing = atr * emSwingATR / pipSize
+    string oe_dScalp = "~15-30m"
+    string oe_dIntra = "~2-6h"
+    string oe_dSwing = "~1-3d"
+    // L4 filter: Session Mode 0=Scalp 1=Intraday 2=Swing; 3=Adaptive→max prob.
+    int oe_pick = sessionMode <= 2 ? sessionMode : (oe_pSwing >= oe_pIntra and oe_pSwing >= oe_pScalp ? 2 : oe_pIntra >= oe_pScalp ? 1 : 0)
+    float  oe_recProb = oe_pick == 0 ? oe_pScalp : oe_pick == 1 ? oe_pIntra : oe_pSwing
+    float  oe_recMove = oe_pick == 0 ? oe_mScalp : oe_pick == 1 ? oe_mIntra : oe_mSwing
+    string oe_recDur  = oe_pick == 0 ? oe_dScalp : oe_pick == 1 ? oe_dIntra : oe_dSwing
+    string oe_recTier = oe_pick == 0 ? "Scalp" : oe_pick == 1 ? "Intraday" : "Swing"
+    string oe_modeWord = sessionMode == 0 ? "Scalper" : sessionMode == 1 ? "Intraday" : sessionMode == 2 ? "Swing" : "Adaptive"
+    string oe_recDirWord = displayWaveDir == 1 ? "Long" : displayWaveDir == -1 ? "Short" : "—"
+    // Compact tier descriptor: "▲ 82% · 12p · ~15-30m" (or "–" when no direction)
+    string oe_txtScalp = oe_dead ? "–" : (displayWaveDir == 1 ? "▲ " : "▼ ") + f_v72_pct(oe_pScalp) + " · " + str.tostring(math.round(oe_mScalp)) + "p · " + oe_dScalp
+    string oe_txtIntra = oe_dead ? "–" : (displayWaveDir == 1 ? "▲ " : "▼ ") + f_v72_pct(oe_pIntra) + " · " + str.tostring(math.round(oe_mIntra)) + "p · " + oe_dIntra
+    string oe_txtSwing = oe_dead ? "–" : (displayWaveDir == 1 ? "▲ " : "▼ ") + f_v72_pct(oe_pSwing) + " · " + str.tostring(math.round(oe_mSwing)) + "p · " + oe_dSwing
+    string oe_recText  = oe_dead ? "Stand Down — no opportunity" : oe_recTier + " " + oe_recDirWord + " · " + f_v72_pct(oe_recProb)
+
     // ── V72.9 Wave Registry (C5, C12) — var locals persist (single call site) ─
     var array<int>    wr_waveId          = array.new_int()
     var array<int>    wr_parentWaveId    = array.new_int()
@@ -5542,7 +5595,7 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
 
     // ── V72.12 Dashboards ────────────────────────────────────────────────────
     if barstate.islast and showTable and showV72Command
-        var table cmd = table.new(position.middle_right, 2, 22, bgcolor=color.new(#05050f, 0), border_color=color.new(#00ffcc, 40), border_width=1, frame_color=color.new(#00ffcc, 10), frame_width=1)
+        var table cmd = table.new(position.middle_right, 2, 28, bgcolor=color.new(#05050f, 0), border_color=color.new(#00ffcc, 40), border_width=1, frame_color=color.new(#00ffcc, 10), frame_width=1)
         table.cell(cmd, 0, 0, "V72 COMMAND", text_color=color.white, bgcolor=color.new(#0a0a30, 0), text_size=_szCmd)
         table.cell(cmd, 1, 0, oppState, text_color=color.black, bgcolor=(oppState == "TRADE ACTIVE" ? #00ff88 : oppState == "PREPARE TO EXECUTE" ? color.lime : oppState == "OPPORTUNITY CONFIRMING" ? color.yellow : oppState == "OPPORTUNITY FORMING" ? color.orange : color.gray), text_size=_szCmd)
         table.cell(cmd, 0, 1, "Bias", text_color=#00ffcc, text_size=_szCmd)
@@ -5587,6 +5640,19 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
         table.cell(cmd, 1, 20, mce_htfAlignmentSummary, text_color=color.silver, text_size=_szCmd)
         table.cell(cmd, 0, 21, "Exec Read", text_color=#00ffcc, text_size=_szCmd)
         table.cell(cmd, 1, 21, mce_execAlignmentSummary, text_color=color.silver, text_size=_szCmd)
+        // ── Phase 3: Trader Intent + Opportunity Engine ──────────────────────
+        table.cell(cmd, 0, 22, "── OPPORTUNITY ──", text_color=#0a0a30, bgcolor=color.new(#00ffcc, 0), text_size=_szCmd)
+        table.cell(cmd, 1, 22, "Mode: " + oe_modeWord, text_color=#0a0a30, bgcolor=color.new(#00ffcc, 0), text_size=_szCmd)
+        table.cell(cmd, 0, 23, (oe_pick == 0 ? "▶ Scalp" : "Scalp"), text_color=(oe_pick == 0 ? color.aqua : #00ffcc), text_size=_szCmd)
+        table.cell(cmd, 1, 23, oe_txtScalp, text_color=(oe_pScalp >= 70 ? color.lime : oe_pScalp >= 50 ? color.yellow : color.silver), text_size=_szCmd)
+        table.cell(cmd, 0, 24, (oe_pick == 1 ? "▶ Intraday" : "Intraday"), text_color=(oe_pick == 1 ? color.aqua : #00ffcc), text_size=_szCmd)
+        table.cell(cmd, 1, 24, oe_txtIntra, text_color=(oe_pIntra >= 70 ? color.lime : oe_pIntra >= 50 ? color.yellow : color.silver), text_size=_szCmd)
+        table.cell(cmd, 0, 25, (oe_pick == 2 ? "▶ Swing" : "Swing"), text_color=(oe_pick == 2 ? color.aqua : #00ffcc), text_size=_szCmd)
+        table.cell(cmd, 1, 25, oe_txtSwing, text_color=(oe_pSwing >= 70 ? color.lime : oe_pSwing >= 50 ? color.yellow : color.silver), text_size=_szCmd)
+        table.cell(cmd, 0, 26, "▶ Recommend", text_color=#00ffcc, text_size=_szCmd)
+        table.cell(cmd, 1, 26, oe_recText, text_color=color.black, bgcolor=(oe_dead ? color.gray : displayWaveDir == 1 ? #00ff88 : color.red), text_size=_szCmd)
+        table.cell(cmd, 0, 27, "Plan (E/S/T)", text_color=#00ffcc, text_size=_szCmd)
+        table.cell(cmd, 1, 27, oe_dead ? "–" : (f_v72_px(doe_entryMid) + " / " + f_v72_px(inv_activeStop) + " / " + f_v72_px(te_tp1) + "  · " + str.tostring(math.round(oe_recMove)) + "p · " + oe_recDur), text_color=color.white, text_size=_szCmd)
     0
 
 // ── Run the V72 engine once per bar ──────────────────────────────────────────
