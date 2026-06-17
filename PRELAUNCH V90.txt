@@ -165,11 +165,10 @@ tf2                = input.timeframe("60",  "Timeframe 2 (HTF Bias)",        gro
 // ─── Fixed Wave Hierarchy (absolute TFs — viewport-independent) ───────────────
 // Anchor the wave layers to ABSOLUTE timeframes so the market model does not
 // change when the chart timeframe changes — the chart becomes only a viewport.
-// L1/L2 already use the fixed TF1/TF2 above. Stage 1 anchors the PRIMARY (L0)
-// direction here; the lifecycle and levels migrate to fixed L0 in later stages.
-bool   useFixedHierarchy = input.bool(true, "Fixed Wave Hierarchy (anchor L0 to absolute TF)", group=GRP_MTF, tooltip="When ON, the primary (L0) wave DIRECTION is computed on a fixed timeframe via request.security, so changing the chart timeframe no longer flips direction. On the L0 timeframe itself it is identical to today. (Stage 1: direction. Lifecycle & levels are anchored in later stages.)")
+// There is NO primary (L0) layer: L3=execution (M3), L1=trading (M15, owns
+// direction), L2=dominant (M60). L1/L2 already use the fixed TF1/TF2 above.
+bool   useFixedHierarchy = input.bool(true, "Fixed Wave Hierarchy (anchor layers to absolute TFs)", group=GRP_MTF, tooltip="When ON, direction is computed on the fixed L1 trading wave (TF1, 15m) via request.security, so changing the chart timeframe no longer flips the model. L3 execution = M3, L2 dominant = TF2 (60m).")
 string tfL3        = input.timeframe("3",   "L3 Execution TF (fixed)",       group=GRP_MTF)
-string tfL0        = input.timeframe("5",   "L0 Primary TF (fixed)",         group=GRP_MTF)
 
 // ─── Execution ──────────────────────────────────────────────────────────────
 baseLockBars       = input.int   (10,   "Base Lock Bars After Entry Fire",   group=GRP_EXEC, minval=1, maxval=50)
@@ -356,7 +355,7 @@ f_zoneRange() => [ta.highest(high, 20), ta.lowest(low, 20)]
 [l1_zoneHigh, l1_zoneLow] = request.security(syminfo.tickerid, tf1,
      f_zoneRange(), lookahead=barmerge.lookahead_off)
 
-[l3_zoneHigh, l3_zoneLow] = request.security(syminfo.tickerid, "1",
+[l3_zoneHigh, l3_zoneLow] = request.security(syminfo.tickerid, tfL3,
      f_zoneRange(), lookahead=barmerge.lookahead_off)
 
 var int htfBias1  = 0
@@ -580,13 +579,13 @@ if bullCHoCH
 if bearCHoCH
     displayWaveDir := -1
 
-// ── Fixed Wave Hierarchy (Stage 1): anchor L0 direction to an absolute TF ─────
-// Compute the SAME structural-direction logic on the fixed L0 timeframe (5m) so
-// the primary wave direction is identical no matter which chart TF the trader is
-// viewing. On the L0 timeframe itself this equals the chart derivation above.
-int l0_fixedDir = request.security(syminfo.tickerid, tfL0, f_waveDirTF(pivotLen, chochBufferATR, atrLen), lookahead=barmerge.lookahead_off)
-if useFixedHierarchy and not na(l0_fixedDir)
-    displayWaveDir := l0_fixedDir
+// ── Fixed Wave Hierarchy: directional authority = L1 trading wave (M15) ───────
+// There is no separate "primary" (L0) layer. The L1 trading wave (fixed 15m) owns
+// direction so it is identical regardless of the chart timeframe. Computed with
+// the same buffered-CHoCH logic, on the fixed L1 feed via request.security.
+int primaryFixedDir = request.security(syminfo.tickerid, tf1, f_waveDirTF(pivotLen, chochBufferATR, atrLen), lookahead=barmerge.lookahead_off)
+if useFixedHierarchy and not na(primaryFixedDir)
+    displayWaveDir := primaryFixedDir
 if displayWaveDir == 0 and direction != 0
     displayWaveDir := direction
 string displayWaveDirStr = displayWaveDir == 1 ? "Bullish Wave" : displayWaveDir == -1 ? "Bearish Wave" : "Neutral"
@@ -4480,7 +4479,7 @@ alertcondition(p3_highConvictionSetup,
 
 var string GRP_TRACE = "Wave Traceability (Phase 1)"
 showTraceZones  = input.bool(true,  "Show Wave Traceability Zones (on-chart)", group=GRP_TRACE)
-showL0Zone      = input.bool(true,  "Show L0 Primary Origin Zone",             group=GRP_TRACE)
+showL0Zone      = input.bool(false, "Show L0 Primary Origin Zone (deprecated)", group=GRP_TRACE)
 showDominantTag = input.bool(true,  "Show Dominant Wave Tag",                  group=GRP_TRACE)
 showOriginPins  = input.bool(true,  "Show Origin Anchor Pins",                 group=GRP_TRACE)
 
