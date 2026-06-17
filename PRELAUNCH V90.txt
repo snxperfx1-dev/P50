@@ -5458,7 +5458,10 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
          ie1a_currentPhase == "Expansion" or ie1a_currentPhase == "Expansion Pre-Convexity" or ie1a_currentPhase == "Expansion Induction" or ie1a_currentPhase == "Expansion Liquidity" ? 45.0 :
          ie1a_currentPhase == "Point 4 Origin" ? 25.0 : 0.0
     float _opRotation   = rot_transferProbability
-    float _opReturn     = na(frz_distanceToZone) ? (frz_inProximity ? 100.0 : 0.0) : math.max(0.0, 100.0 - frz_distanceToZone * 40.0)
+    // Smooth proximity ramp: full credit at the zone, decaying to 0 by ~5 ATR
+    // away (was `100 - dist*40`, which zeroed out beyond 2.5 ATR and pinned this
+    // 15% component to ~0 unless price was almost touching the zone).
+    float _opReturn     = na(frz_distanceToZone) ? (frz_inProximity ? 100.0 : 0.0) : 100.0 * math.max(0.0, 1.0 - frz_distanceToZone / 5.0)
     float _opHtf        = mce_htfAlignmentScore
     float _opDisplace   = math.max(re_recursiveCompletionScore, ede_dissipationProgress)
     float _opConfluence = (frz_attractorConvergence ? 50.0 : 0.0) + ((frz_inProximity and frz_bestZoneDir == displayWaveDir) ? 50.0 : 0.0)
