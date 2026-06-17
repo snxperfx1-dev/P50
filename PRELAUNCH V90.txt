@@ -4463,10 +4463,10 @@ var label dominantLabel = na  // Dominant wave tag on dominant structure
 // direction (green = bullish, red = bearish). The path is recorded one point per
 // bar and the curve is (re)drawn on the last bar so it stays in sync as the wave
 // evolves, without the visual weight of a filled rectangle.
-var polyline           l0WaveCurve     = na
-var array<chart.point> l0PathPts       = array.new<chart.point>()
-var int                _l0PathOriginBar = na
-var int                _l0LastAddBar    = na
+var polyline           l0WaveCurve   = na
+var array<chart.point> l0PathPts     = array.new<chart.point>()   // build buffer for the drawn curve
+var array<chart.point> l0AllPts      = array.new<chart.point>()   // rolling per-bar path record (for origin reconstruction)
+var int                _l0LastAddBar = na
 
 // ── Helper: midpoint of a price range ───────────────────────────────────────
 f_mid(float h, float l) => (h + l) / 2.0
@@ -4536,36 +4536,45 @@ if showTraceZones and barstate.islast and not na(l2_zoneHigh) and not na(l2_zone
 // Zone: point4OriginBar → bar_index (the real wave extent on chart)
 // Label: placed at the origin bar (the actual spawn point)
 // ════════════════════════════════════════════════════════════════════════════
+
+// Continuous L0 path recorder — captures one point per bar UNCONDITIONALLY so the
+// Primary Wave Curve can always be reconstructed from the true L0 origin (no
+// matter when the wave was detected). Rolling cap keeps memory bounded. The
+// last point is refreshed intrabar so the curve tracks the live bar.
+if na(_l0LastAddBar) or bar_index != _l0LastAddBar
+    array.push(l0AllPts, chart.point.from_index(bar_index, close))
+    _l0LastAddBar := bar_index
+    if array.size(l0AllPts) > 2000
+        array.shift(l0AllPts)
+else if array.size(l0AllPts) > 0
+    array.set(l0AllPts, array.size(l0AllPts) - 1, chart.point.from_index(bar_index, close))
+
 if showL0Zone and not na(point4OriginBar) and not na(point4OriginHigh) and not na(point4OriginLow)
 
     // _l0phase = waveProgressCanonical (used for label text below)
     string _l0txt = "L0 PRIMARY · " + l0_targetWave + " · " + l0_currentPhase + " · D" + str.tostring(math.round(nz(l0_dominance, 0.0))) + "%"
 
     // ── Primary Wave Curve (replaces the heavy L0 box) ──────────────────────
-    // Trace the ACTUAL L0 wave path from its origin to the current bar as a
-    // smooth, lightweight curve. Direction is dominant-source (displayWaveDir,
-    // falling back to the lifecycle direction): green = bullish, red = bearish.
+    // ALWAYS anchored at the true L0 origin (point4OriginBar) and traces the real
+    // wave path from there to the current bar via the continuous recorder above.
+    // Direction is dominant-source (displayWaveDir, falling back to lifecycle
+    // direction): green = bullish, red = bearish. Drawn on the last bar so it
+    // persists across the chart and stays visible as the wave evolves.
     int _l0dir = displayWaveDir != 0 ? displayWaveDir : direction
-    // Reset the recorded path whenever a new primary wave spawns (origin moves),
-    // seeding the first point at the true origin pivot.
-    if na(_l0PathOriginBar) or _l0PathOriginBar != point4OriginBar
-        array.clear(l0PathPts)
-        _l0PathOriginBar := point4OriginBar
-        float _l0seed = _l0dir == 1 ? point4OriginLow : _l0dir == -1 ? point4OriginHigh : close
-        array.push(l0PathPts, chart.point.from_index(point4OriginBar, _l0seed))
-        _l0LastAddBar := point4OriginBar
-    // One path point per confirmed bar; refresh the last point intrabar so the
-    // curve tracks the live bar as the wave evolves.
-    if na(_l0LastAddBar) or bar_index != _l0LastAddBar
-        array.push(l0PathPts, chart.point.from_index(bar_index, close))
-        _l0LastAddBar := bar_index
-    else if array.size(l0PathPts) > 0
-        array.set(l0PathPts, array.size(l0PathPts) - 1, chart.point.from_index(bar_index, close))
-    // Draw/refresh the curve only on the last bar — keeps it unobtrusive.
     if barstate.islast
         if not na(l0WaveCurve)
             polyline.delete(l0WaveCurve)
             l0WaveCurve := na
+        array.clear(l0PathPts)
+        // Seed at the exact L0 origin pivot so the curve always starts there.
+        float _l0seed = _l0dir == 1 ? point4OriginLow : _l0dir == -1 ? point4OriginHigh : close
+        array.push(l0PathPts, chart.point.from_index(point4OriginBar, _l0seed))
+        // Append every recorded point AFTER the origin → the real traced path.
+        if array.size(l0AllPts) > 0
+            for _i = 0 to array.size(l0AllPts) - 1
+                chart.point _pp = array.get(l0AllPts, _i)
+                if _pp.index > point4OriginBar
+                    array.push(l0PathPts, _pp)
         if array.size(l0PathPts) >= 2
             color _l0curveCol = _l0dir == 1 ? color.green : _l0dir == -1 ? color.red : color.gray
             l0WaveCurve := polyline.new(l0PathPts, curved = true, closed = false, line_color = _l0curveCol, line_width = 2, xloc = xloc.bar_index)
