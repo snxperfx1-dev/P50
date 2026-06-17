@@ -5520,6 +5520,25 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
     string oe_txtSwing = oe_dead ? "–" : (displayWaveDir == 1 ? "▲ " : "▼ ") + f_v72_pct(oe_pSwing) + " · " + str.tostring(math.round(oe_mSwing)) + "p · " + oe_dSwing
     string oe_recText  = oe_dead ? "Stand Down — no opportunity" : oe_recTier + " " + oe_recDirWord + " · " + f_v72_pct(oe_recProb)
 
+    // ── Consistent trade plan (fixes direction/levels contradiction) ─────────
+    // Every level is derived relative to the RECOMMENDED direction (displayWaveDir
+    // — the single source), so Entry/Stop/Target can never contradict the
+    // recommendation. Richer engine levels (inv_activeStop, te_tp1) are used only
+    // when the lifecycle `direction` confirms the same side; otherwise ATR-derived
+    // levels are used on the correct side. A lifecycle conflict is flagged, not
+    // shown as contradictory numbers.
+    int    oe_dir      = displayWaveDir
+    bool   oe_aligned  = oe_dir != 0 and direction == oe_dir
+    bool   oe_conflict = oe_dir != 0 and direction != 0 and direction != oe_dir
+    float  oe_entryPx  = nz(doe_entryMid, close)
+    float  oe_movePx   = oe_recMove * pipSize
+    float  _oe_stop0   = oe_aligned and not na(inv_activeStop) ? inv_activeStop : na
+    bool   _oe_stopOK  = not na(_oe_stop0) and (oe_dir == 1 ? _oe_stop0 < oe_entryPx : _oe_stop0 > oe_entryPx)
+    float  oe_stopPx   = oe_dead or oe_dir == 0 ? na : (_oe_stopOK ? _oe_stop0 : oe_entryPx - oe_dir * atr * 1.2)
+    float  _oe_tgt0    = oe_aligned and not na(te_tp1) ? te_tp1 : na
+    bool   _oe_tgtOK   = not na(_oe_tgt0) and (oe_dir == 1 ? _oe_tgt0 > oe_entryPx : _oe_tgt0 < oe_entryPx)
+    float  oe_targetPx = oe_dead or oe_dir == 0 ? na : (_oe_tgtOK ? _oe_tgt0 : oe_entryPx + oe_dir * oe_movePx)
+
     // New-entry flash: latch the bar where the opportunity first becomes
     // TRADE ACTIVE, then flash a red alert row for a few bars. On realtime the
     // alert blinks (timenow-driven) so a freshly-sent entry is impossible to miss.
@@ -5531,7 +5550,7 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
     _oe_prevState := oppState
     bool   oe_entryFresh = not na(_oe_lastEntryBar) and (bar_index - _oe_lastEntryBar) <= 6
     bool   oe_flashOn    = oe_entryFresh and (not barstate.isrealtime or (math.floor(timenow / 450) % 2 == 0))
-    string oe_signalTxt  = oe_entryFresh ? ("⚠ NEW ENTRY  " + oe_recDirWord + " @ " + f_v72_px(doe_entryMid)) : "— no new entry —"
+    string oe_signalTxt  = oe_entryFresh ? ("⚠ NEW ENTRY  " + oe_recDirWord + " @ " + f_v72_px(oe_entryPx)) : "— no new entry —"
 
     // ── V72.9 Wave Registry (C5, C12) — var locals persist (single call site) ─
     var array<int>    wr_waveId          = array.new_int()
@@ -5706,13 +5725,13 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
         table.cell(cmd, 0, 25, (oe_pick == 2 ? "▶ Swing" : "Swing"), text_color=(oe_pick == 2 ? color.aqua : #00ffcc), text_size=_szCmd)
         table.cell(cmd, 1, 25, oe_txtSwing, text_color=(oe_pSwing >= 70 ? color.lime : oe_pSwing >= 50 ? color.yellow : color.silver), text_size=_szCmd)
         table.cell(cmd, 0, 26, "▶ Recommend", text_color=#00ffcc, text_size=_szCmd)
-        table.cell(cmd, 1, 26, oe_recText, text_color=color.black, bgcolor=(oe_dead ? color.gray : displayWaveDir == 1 ? #00ff88 : color.red), text_size=_szCmd)
+        table.cell(cmd, 1, 26, oe_recText + (oe_conflict ? "  ⚠" : ""), text_color=color.black, bgcolor=(oe_dead ? color.gray : oe_conflict ? color.orange : displayWaveDir == 1 ? #00ff88 : color.red), text_size=_szCmd)
         table.cell(cmd, 0, 27, "Entry", text_color=#00ffcc, text_size=_szCmd)
-        table.cell(cmd, 1, 27, oe_dead ? "–" : f_v72_px(doe_entryMid), text_color=color.aqua, text_size=_szCmd)
+        table.cell(cmd, 1, 27, oe_dead ? "–" : f_v72_px(oe_entryPx), text_color=color.aqua, text_size=_szCmd)
         table.cell(cmd, 0, 28, "Stop", text_color=#00ffcc, text_size=_szCmd)
-        table.cell(cmd, 1, 28, oe_dead ? "–" : (f_v72_px(inv_activeStop) + (inv_invalidated ? "  ✗" : "")), text_color=EC_RED, text_size=_szCmd)
+        table.cell(cmd, 1, 28, oe_dead or na(oe_stopPx) ? "–" : (f_v72_px(oe_stopPx) + (inv_invalidated ? "  ✗" : "")), text_color=EC_RED, text_size=_szCmd)
         table.cell(cmd, 0, 29, "Target", text_color=#00ffcc, text_size=_szCmd)
-        table.cell(cmd, 1, 29, oe_dead ? "–" : (f_v72_px(te_tp1) + "  · " + str.tostring(math.round(oe_recMove)) + "p · " + oe_recDur), text_color=EC_GREEN, text_size=_szCmd)
+        table.cell(cmd, 1, 29, oe_dead or na(oe_targetPx) ? "–" : (f_v72_px(oe_targetPx) + "  · " + oe_recDur), text_color=EC_GREEN, text_size=_szCmd)
         table.cell(cmd, 0, 30, "Signal", text_color=#00ffcc, text_size=_szCmd)
         table.cell(cmd, 1, 30, oe_signalTxt, text_color=(oe_entryFresh ? color.white : color.gray), bgcolor=(oe_entryFresh ? (oe_flashOn ? EC_RED : color.new(EC_RED, 65)) : color.new(#05050f, 0)), text_size=_szCmd)
     0
