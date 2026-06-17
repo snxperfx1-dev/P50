@@ -5321,6 +5321,20 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
     float mce_alignmentScore     = displayWaveDir == 0 ? 0.0 : _mce_agreeAll  / 4.0 * 100.0
     float mce_htfAlignmentScore  = displayWaveDir == 0 ? 0.0 : _mce_agreeHtf  / 2.0 * 100.0
     float mce_execAlignmentScore = displayWaveDir == 0 ? 0.0 : _mce_agreeExec / 2.0 * 100.0
+    // ── Pullback-aware entry alignment ───────────────────────────────────────
+    // Across timeframes the cycles naturally differ — a faster TF is often on the
+    // opposite leg of its cycle to the dominant wave. So instead of penalising a
+    // faster TF for disagreeing, treat a COUNTER faster TF as a pullback INTO the
+    // dominant wave (a high-quality entry) when the HTF still backs the thesis.
+    // HTF backing = thesis (60%); timing credit (40%) is highest for a pullback,
+    // good for a continuation (aligned), neutral when the faster TF is flat.
+    float _mce_htfBack = mce_htfAlignmentScore                                                          // 0/50/100 HTF backing
+    int   _mce_execPos  = mce_tf1_direction == 0 ? 0 : (mce_tf1_direction == displayWaveDir ? 1 : -1)   // 1=aligned, -1=pullback
+    int   _mce_intraPos = mce_tf2_direction == 0 ? 0 : (mce_tf2_direction == displayWaveDir ? 1 : -1)
+    float _mce_execTiming  = _mce_execPos  == -1 ? 100.0 : _mce_execPos  == 1 ? 80.0 : 50.0
+    float _mce_intraTiming = _mce_intraPos == -1 ? 100.0 : _mce_intraPos == 1 ? 80.0 : 50.0
+    float mce_scalpEntryScore = displayWaveDir == 0 ? 0.0 : _mce_htfBack * 0.6 + _mce_execTiming  * 0.4
+    float mce_intraEntryScore = displayWaveDir == 0 ? 0.0 : _mce_htfBack * 0.6 + _mce_intraTiming * 0.4
     int mce_lifecycleProgress =
          ie1a_currentPhase == "Point 4 Origin"           ? 5  :
          ie1a_currentPhase == "Expansion"                ? 20 :
@@ -5499,8 +5513,8 @@ f_v72_run(int _dir3, int _dir4, array<float> _cf, array<int> _ci, array<bool> _c
     // Per-tier probability: same maturity (oppProgress) re-weighted by the
     // alignment that matters for each horizon (exec-frame for scalp, balanced for
     // intraday, HTF for swing). Clamped 0–100.
-    float oe_pScalp = oe_dead ? 0.0 : math.min(100.0, oppProgress * 0.40 + mce_execAlignmentScore * 0.30 + erf_tradeReadiness * 0.15 + (frz_inProximity and frz_bestZoneDir == displayWaveDir ? 15.0 : 0.0))
-    float oe_pIntra = oe_dead ? 0.0 : math.min(100.0, oppProgress * 0.45 + mce_alignmentScore * 0.25 + tqe_rawScore * 0.20 + rot_controlStability * 0.10)
+    float oe_pScalp = oe_dead ? 0.0 : math.min(100.0, oppProgress * 0.40 + mce_scalpEntryScore * 0.30 + erf_tradeReadiness * 0.15 + (frz_inProximity and frz_bestZoneDir == displayWaveDir ? 15.0 : 0.0))
+    float oe_pIntra = oe_dead ? 0.0 : math.min(100.0, oppProgress * 0.45 + mce_intraEntryScore * 0.25 + tqe_rawScore * 0.20 + rot_controlStability * 0.10)
     float oe_pSwing = oe_dead ? 0.0 : math.min(100.0, oppProgress * 0.35 + mce_htfAlignmentScore * 0.35 + rot_controlStability * 0.15 + ne_narrativeStrength * 0.15)
     // Expected move per horizon (pips), ATR-scaled and tunable.
     float oe_mScalp = atr * emScalpATR / pipSize
